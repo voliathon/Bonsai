@@ -1,6 +1,6 @@
 _addon.name     = 'Bonsai'
 _addon.author   = 'Noirblanc'
-_addon.version  = '1.2'
+_addon.version  = '1.3'
 _addon.commands = {'bonsai', 'bon'}
 
 local packets = require('packets')
@@ -1172,5 +1172,32 @@ windower.register_event('unload', function()
             release_menu()
             windower.add_to_chat(207, '[Bonsai] Addon unloaded safely: active NPC event terminated.')
         end
+    end
+end)
+
+-- Listen for server error text indicating a creature has turned dark
+windower.register_event('incoming text', function(original)
+    -- Only trigger if Bonsai is actively running a cycle
+    if state == STATE_IDLE then return end
+
+    -- Use plain-text matching to check for the dark creature warning
+    if original:find("succumbed to the darkness", 1, true) then
+        -- Stop character movement if autorunning toward a node
+        if state == STATE_MOVING then
+            windower.ffxi.run(false)
+        end
+        
+        -- Safely back out if stuck in a menu dialogue
+        local in_interaction = (state == STATE_POKED or state == STATE_SENDING or state == STATE_INTER_MESSAGE)
+        if in_interaction then
+            release_menu()
+        end
+        
+        -- Stop the automation loop entirely
+        reset_all()
+        
+        -- Notify the user how to resolve the lock
+        err('A creature in your garden has succumbed to the darkness!')
+        chat('To get Bonsai working again, you must either: Hope moogle magic does the trick, or put the creature down.')
     end
 end)
