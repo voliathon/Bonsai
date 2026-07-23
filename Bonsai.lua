@@ -1,6 +1,6 @@
 _addon.name     = 'Bonsai'
 _addon.author   = 'Noirblanc'
-_addon.version  = '1.3'
+_addon.version  = '1.4'
 _addon.commands = {'bonsai', 'bon'}
 
 local packets = require('packets')
@@ -41,6 +41,7 @@ local REVIVAL_ROOT_ITEM_ID        = 940
 local MIRACLE_MULCH_ITEM_ID       = 8971
 local FURROW_FERTILIZE_OPT        = 16
 local USE_FERTILIZER              = false
+local AUTOSELL_ENABLED            = false
 
 local WARP_TO_REARING_GROUNDS = {
     kind='warp', mode='warp', name_prefix='Chacharoon',
@@ -81,7 +82,8 @@ local plant_failed            = false
 local function chat(msg) windower.add_to_chat(207, '[Bonsai] ' .. msg) end
 local function err(msg)  windower.add_to_chat(123, '[Bonsai] ' .. msg) end
 
-local SETTINGS_FILE = (windower.addon_path or '') .. 'data/bonall_settings.lua'
+local config = require('config')
+
 local DEFAULT_BONALL_ORDER = { 'mine', 'dredger', 'grove', 'flotsam', 'net', 'pet' }
 local NODE_KEY_SET = {
     mine=true, dredger=true, grove=true, net=true, flotsam=true, pet=true,
@@ -95,52 +97,29 @@ local NODE_LABEL = {
     pet     = 'Pet (warp + monsters)',
 }
 
-local function load_bonall_settings()
-    local f = io.open(SETTINGS_FILE, 'r')
-    if not f then return {} end
-    local content = f:read('*a')
-    f:close()
-    if not content or content == '' then return {} end
-    local loader = loadstring(content)
-    if not loader then return {} end
-    local ok, result = pcall(loader)
-    if ok and type(result) == 'table' then return result end
-    return {}
-end
-
-local function save_bonall_settings(s)
-    local f = io.open(SETTINGS_FILE, 'w')
-    if not f then
-        pcall(function() os.execute('mkdir "' .. (windower.addon_path or '') .. 'data" 2>nul') end)
-        f = io.open(SETTINGS_FILE, 'w')
-        if not f then return false end
-    end
-    f:write('-- Per-character //bon all node order. Managed by //bon add/remove.\n')
-    f:write('return {\n')
-    for char, list in pairs(s) do
-        if type(list) == 'table' then
-            local quoted = {}
-            for _, k in ipairs(list) do quoted[#quoted+1] = string.format('%q', k) end
-            f:write(string.format('  [%q] = { %s },\n', char, table.concat(quoted, ', ')))
-        end
-    end
-    f:write('}\n')
-    f:close()
-    return true
-end
-
-local bonall_settings = load_bonall_settings()
+-- Setup default settings using Windower's config library
+local defaults = {
+    chars = {}
+}
+local settings = config.load(defaults)
 
 local function get_bonall_order_for_current()
     local p = windower.ffxi.get_player()
     if not p or not p.name or p.name == '' then return nil, nil end
     local name = p.name
-    if type(bonall_settings[name]) ~= 'table' then
+
+    -- If this character doesn't have settings yet, generate defaults and save
+    if type(settings.chars[name]) ~= 'table' then
         local copy = {}
         for _, k in ipairs(DEFAULT_BONALL_ORDER) do copy[#copy+1] = k end
-        bonall_settings[name] = copy
+        settings.chars[name] = { order = copy, autosell = false }
+        config.save(settings)
     end
-    return bonall_settings[name], name
+    
+    -- Sync the loaded file setting to the active memory variable
+    AUTOSELL_ENABLED = settings.chars[name].autosell
+    
+    return settings.chars[name].order, name
 end
 
 local function index_of_key(list, key)
@@ -330,14 +309,21 @@ local function send_trade(npc, item_id, count)
     return true
 end
 
-local function send_menu_response(npc, opt, automatic)
+local function send_menu_response(npc, opt, automatic, u1)
+    local unknown1_val = u1 or 0
+    
+    -- [DEBUG] Log every option index sent to the NPC
+    -- if current_npc and current_npc.plan and current_npc.plan.mode == 'moogle_sell' then
+        -- chat(string.format('[DEBUG] Sending Moogle Option: %d | _unknown1: %d (Auto: %s, Menu ID: %d)', opt, unknown1_val, tostring(automatic), current_npc.menu_id or 0))
+    -- end
+
     local p = packets.new('outgoing', 0x05B)
     p['Target']            = npc.id
     p['Target Index']      = npc.index
     p['Zone']              = MOG_GARDEN_ZONE
     p['Menu ID']           = current_npc and current_npc.menu_id or 0
     p['Option Index']      = opt
-    p['_unknown1']         = 0
+    p['_unknown1']         = unknown1_val -- Now dynamically uses 4094!
     p['Automated Message'] = automatic
     p['_unknown2']         = 0
     packets.inject(p)
@@ -381,6 +367,12 @@ local function build_message_queue(count)
             queue[#queue+1] = { type='menu', opt=op, auto=true }
         end
         queue[#queue+1] = { type='menu', opt=plan.opt, auto=false }
+    -- --- MOOGLE SELL NAVIGATION ---
+    elseif plan.mode == 'moogle_sell' then
+        -- chat('[DEBUG] Sending compiled Moogle shop selection (Option: 255 | u1: 4094)...')
+        -- ONE single packet using the exact numbers from your manual click!
+        queue[#queue+1] = { type='menu', opt=255, auto=false, u1=4094 }
+    -- ------------------------------
     else
         local n = count
         if not n or n <= 0 then
@@ -405,7 +397,7 @@ local function send_next_in_queue()
     if m.type == 'coord' then
         send_coord_packet(current_npc, m.x, m.y, m.z, m.u1)
     else
-        send_menu_response(current_npc, m.opt, m.auto)
+        send_menu_response(current_npc, m.opt, m.auto, m.u1) -- Added m.u1 here!
     end
     return true
 end
@@ -535,6 +527,14 @@ windower.register_event('prerender', function()
             return
         end
         local entry = current_plan[plan_index]
+		
+		-- --- FIRE EXTERNAL SELL COMMAND ---
+        if entry.mode == 'moogle_sell' then
+            chat('Arming SellNPC: executing //sellnpc garden')
+            windower.send_command('sellnpc garden')
+        end
+        -- ----------------------------------		
+		
         local npc
         if entry.kind == 'monster' or entry.kind == 'furrow' then
             npc = windower.ffxi.get_mob_by_index(entry.index)
@@ -699,6 +699,28 @@ end)
 windower.register_event('incoming chunk', function(id, data)
     if state == STATE_IDLE then return end
 
+    -- --- HANDLE MOOGLE SHOP CLOSING ---
+    if id == 0x03C then
+        if current_npc and current_npc.plan and current_npc.plan.mode == 'moogle_sell' then
+            if current_npc.shop_opened then return true end
+            current_npc.shop_opened = true
+            
+            -- Lock the state machine so normal dialogue packets cannot interfere during the sale!
+            set_state('SHOP_WAIT')
+            
+            chat('Shop interface opened. Selling items via SellNPC...')
+            
+            local function close_shop_and_proceed()
+                chat('Closing shop interface and proceeding to next node.')
+                windower.send_command('setkey escape down; wait 0.1; setkey escape up')
+                go_to_cooldown()
+            end
+            close_shop_and_proceed:schedule(2.0)
+            return true
+        end
+    end
+    -- ----------------------------------
+
     if id == 0x032 or id == 0x033 or id == 0x034 then
         if state ~= STATE_POKED then return end
         local p = packets.parse('incoming', data)
@@ -707,6 +729,11 @@ windower.register_event('incoming chunk', function(id, data)
         if npc_id ~= current_npc.id then return end
 
         current_npc.menu_id = p['Menu ID'] or 0
+
+        -- [DEBUG] Log the initial NPC interaction response
+        --if current_npc.plan and current_npc.plan.mode == 'moogle_sell' then
+        --    chat(string.format('[DEBUG] Moogle responded! Chunk 0x%02X received. Menu ID: %d', id, current_npc.menu_id))
+        --end
 
         local plan  = current_npc.plan
         local count = nil
@@ -733,6 +760,12 @@ windower.register_event('incoming chunk', function(id, data)
 
     if id == 0x052 then
         if state ~= STATE_SENDING then return end
+        
+        -- [DEBUG] Log dialogue update packets from the server
+        if current_npc and current_npc.plan and current_npc.plan.mode == 'moogle_sell' then
+            chat('[DEBUG] Received intermediate dialogue packet 0x052 from server.')
+        end
+
         local p = packets.parse('incoming', data)
         local rtype = p and p['Type'] or 0
 
@@ -743,6 +776,11 @@ windower.register_event('incoming chunk', function(id, data)
         end
 
         if not current_npc.queue or #current_npc.queue == 0 then
+            -- GUARD: Do not let 0x052 trigger cooldown on Moogle shop nodes! Let the 2-second timer handle it!
+            if current_npc.plan and current_npc.plan.mode == 'moogle_sell' then
+                return
+            end
+
             chat(string.format('Done with %s (step %d of %d)',
                 current_npc.name, plan_index, cycle_end_index))
             if current_npc.plan and current_npc.plan.mode == 'warp' then
@@ -802,6 +840,29 @@ local function begin_send_all(msg)
         send_all(msg, SEND_ALL_DELAY, participants)
     end
     go:schedule(MARCO_WAIT)
+end
+
+local function inject_moogle_stops(plan)
+    -- If autosell is turned off, return the plan without inserting Moogle stops
+    if not AUTOSELL_ENABLED then
+        return plan
+    end
+
+    local new_plan = {}
+    local moogle_node = { kind='garden', name_prefix='Green Thumb Moogle', mode='moogle_sell', poke_dist=3.0 }
+    
+    for i, entry in ipairs(plan) do
+        new_plan[#new_plan+1] = entry
+        
+        -- Check if the current node is Flotsam or a rearing monster
+        local is_pet_or_flotsam = (entry.mode == 'pet' or entry.kind == 'monster' or (entry.name_prefix and entry.name_prefix == 'Flotsam'))
+        
+        -- Only insert a Moogle stop after actual gathering nodes (Vein, Dredger, Grove, Net)
+        if entry.kind ~= 'warp' and entry.mode ~= 'moogle_sell' and not is_pet_or_flotsam then
+            new_plan[#new_plan+1] = moogle_node
+        end
+    end
+    return new_plan
 end
 
 windower.register_event('ipc message', function(msg)
@@ -864,8 +925,9 @@ windower.register_event('addon command', function(cmd, ...)
         begin_send_all(table.concat(args, ' '))
 
     elseif cmd == 'garden' or cmd == 'start' then
-        begin_run(NPC_PLAN_GARDEN,
-            'Starting garden cycle: Mineral Vein -> Pond Dredger -> Arboreal Grove -> Coastal Fishing Net',
+        local plan = inject_moogle_stops(NPC_PLAN_GARDEN)
+        begin_run(plan,
+            'Starting garden cycle with automated Moogle selling pit-stops.',
             true)
 
     elseif cmd == 'pet' then
@@ -1058,14 +1120,19 @@ windower.register_event('addon command', function(cmd, ...)
                         pre_delay  = POST_WARP_DELAY } }
         end
 
+        -- --- INJECT PIT STOPS FOR //BON ALL ---
+        initial_plan = inject_moogle_stops(initial_plan)
+        -- --------------------------------------
+
         begin_run(initial_plan,
-            'Starting //bon all: ' .. format_order(order),
+            'Starting //bon all with automated Moogle selling: ' .. format_order(order),
             true, chain)
 
     elseif single_aliases[cmd] then
         local idx = single_aliases[cmd]
         local entry = NPC_PLAN_GARDEN[idx]
-        begin_run({entry}, 'Single garden NPC: ' .. entry.name_prefix, true)
+        local plan = inject_moogle_stops({entry})
+        begin_run(plan, 'Single garden NPC: ' .. entry.name_prefix, true)
 
     elseif cmd == 'flotsam' then
         local entry = { kind='garden', name_prefix='Flotsam', opt=1, mode='pet' }
@@ -1088,11 +1155,8 @@ windower.register_event('addon command', function(cmd, ...)
                 return
             end
             order[#order+1] = target
-            if save_bonall_settings(bonall_settings) then
-                chat(string.format('Added %s. Order: %s', target, format_order(order)))
-            else
-                err('Order updated in memory but failed to save to disk.')
-            end
+            config.save(settings)
+            chat(string.format('Added %s. Order: %s', target, format_order(order)))
         else
             local idx = index_of_key(order, target)
             if not idx then
@@ -1100,11 +1164,8 @@ windower.register_event('addon command', function(cmd, ...)
                 return
             end
             table.remove(order, idx)
-            if save_bonall_settings(bonall_settings) then
-                chat(string.format('Removed %s. Order: %s', target, format_order(order)))
-            else
-                err('Order updated in memory but failed to save to disk.')
-            end
+            config.save(settings)
+            chat(string.format('Removed %s. Order: %s', target, format_order(order)))
         end
 
     elseif cmd == 'list' then
@@ -1123,6 +1184,28 @@ windower.register_event('addon command', function(cmd, ...)
             reset_all()
         end
 
+    elseif cmd == 'autosell' or cmd == 'sell' then
+        local order, name = get_bonall_order_for_current()
+        if not name then
+            err('Not logged in yet.')
+            return
+        end
+        
+        local arg = (args[1] or ''):lower()
+        if arg == 'on' or arg == 'true' or arg == '1' then
+            AUTOSELL_ENABLED = true
+        elseif arg == 'off' or arg == 'false' or arg == '0' then
+            AUTOSELL_ENABLED = false
+        else
+            AUTOSELL_ENABLED = not AUTOSELL_ENABLED
+        end
+        
+        -- Save the new preference to the global file
+        settings.chars[name].autosell = AUTOSELL_ENABLED
+        config.save(settings)
+        
+        chat('Moogle Auto-Sell: ' .. (AUTOSELL_ENABLED and 'ON' or 'OFF') .. ' (Saved)')
+
     elseif cmd == 'fertilize' or cmd == 'fert' then
         USE_FERTILIZER = not USE_FERTILIZER
         chat('Fertilizer (Miracle Mulch): ' .. (USE_FERTILIZER and 'ON' or 'OFF'))
@@ -1135,6 +1218,7 @@ windower.register_event('addon command', function(cmd, ...)
         chat('  pet                              Pet all monsters in current zone (idx 0x8A-0x8D)')
         chat('  furrow start [1|2] | stop | status   Loop plant <-> harvest. 1=plant first (default), 2=harvest first')
         chat('  fert                             Toggle Miracle Mulch fertilizing (default: OFF)')
+        chat('  autosell [on/off]                Toggle Green Thumb Moogle auto-selling via SellNPC (default: OFF)')
         chat('  mine | dredger | grove | net     Run just one garden NPC')
         chat('  flotsam                          Interact with Flotsam')
         chat('  add | remove (mine|dredger|grove|net|flotsam|pet)   Customize //bon all order (per-character, saved)')
@@ -1155,6 +1239,17 @@ windower.register_event('zone change', function(new_zone)
         reset_all()
     end
 end)
+
+-- [DIAGNOSTIC] Log exact outgoing menu choices when clicking manually
+-- windower.register_event('outgoing chunk', function(id, data)
+    -- if id == 0x05B then
+        -- local p = packets.parse('outgoing', data)
+        -- if p then
+            -- chat(string.format('[MANUAL CLICK LOG] Option Index: %d | _unknown1: %d | Auto: %s', 
+                -- p['Option Index'], p['_unknown1'], tostring(p['Automated Message'])))
+        -- end
+    -- end
+-- end)
 
 -- Safely handle addon unloads to prevent character soft-locks
 windower.register_event('unload', function()

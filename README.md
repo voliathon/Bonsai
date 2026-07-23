@@ -23,6 +23,9 @@ To operate Bonsai, use the command `//bonsai` (or `//bon` for short).
 - `//bon furrow status` shows how long until the planted furrows are ready, or what the loop is currently doing.
 - `//bon fert` toggles Miracle Mulch fertilizing on/off (default: OFF). When enabled, the loop becomes: plant -> fertilize -> wait 30 min -> harvest -> repeat.
 
+### Auto-Sell
+- `//bon autosell [on|off]` toggles Green Thumb Moogle auto-selling (default: OFF). When enabled, Bonsai will make a pit-stop at the Green Thumb Moogle after each gathering node to automatically sell your inventory junk. Your preference is saved per character.
+
 ### Monster Rearing
 - `//bon pet` pets every breeding monster in the rearing grounds. Please use this only in the Rearing Grounds part of the Mog Garden. If used in the main Mog Garden area, it will cancel.
 
@@ -37,6 +40,9 @@ To operate Bonsai, use the command `//bonsai` (or `//bon` for short).
 - The garden, furrow, and `all` commands require you to be in Mog Garden.
 - `//bon pet` should be ran only when you are in the Rearing Grounds part of your Mog Garden.
 - `//bon all` should be ran from the main Mog Garden area and will naturally transition to the Rearing Grounds after completing the garden tasks.
+
+### Auto-Sell Requirements
+**DISCLAIMER:** The auto-sell functionality strictly requires the external **SellNPC** addon to be installed and loaded. Additionally, you **must** have a profile named `garden` defined in your SellNPC configuration containing the items you wish to automatically sell. Bonsai handles the movement and menu navigation, but relies entirely on the `//sellnpc garden` command to execute the actual item sales.
 
 ### Furrow Requirements
 Furrow uses Revival Roots (https://www.bg-wiki.com/ffxi/Revival_Root) specifically for planting. This means each plant cycle will be 1 hour long. 
