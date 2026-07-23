@@ -58,3 +58,5 @@ In `//bon all`, `pet` always runs last regardless of where it sits in your order
 ## Known Bugs
 
 When using `//bon all` and moving to the Rearing Grounds, due to the nature of the packet teleport sequence, it's possible that ghost monsters may spawn if you don't have the full 4 monster breeding slots filled. In such scenarios, the addon will skip over those monsters automatically. So far it seems to only be a visual glitch.
+
+When using `//bon all` and moving to the Rearing Grounds, all rearing monsters will appear as the default mob model (Sheep). This seems to just be an aesthetic glitch and is fixed upon zoning.
