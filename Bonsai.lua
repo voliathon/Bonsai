@@ -1,6 +1,6 @@
 _addon.name     = 'Bonsai'
 _addon.author   = 'Noirblanc'
-_addon.version  = '1.4'
+_addon.version  = '1.4.1'
 _addon.commands = {'bonsai', 'bon'}
 
 local packets = require('packets')
@@ -106,7 +106,10 @@ local settings = config.load(defaults)
 local function get_bonall_order_for_current()
     local p = windower.ffxi.get_player()
     if not p or not p.name or p.name == '' then return nil, nil end
-    local name = p.name
+
+    -- Windower's XML parser forces all tags to lowercase. We MUST use lowercase 
+    -- to successfully read the saved file!
+    local name = p.name:lower()
 
     -- If this character doesn't have settings yet, generate defaults and save
     if type(settings.chars[name]) ~= 'table' then
@@ -116,10 +119,33 @@ local function get_bonall_order_for_current()
         config.save(settings)
     end
     
+    -- FIX WINDOWER XML ARRAY BUG:
+    -- Windower loads <1>mine</1> as a string key: ["1"] = "mine".
+    -- Lua arrays require integer keys (1 = "mine") or else #order returns 0!
+    local raw_order = settings.chars[name].order
+    local clean_order = {}
+    if raw_order then
+        local temp_map = {}
+        -- Convert string keys like "1" back into actual numbers
+        for k, v in pairs(raw_order) do
+            temp_map[tonumber(k) or k] = v
+        end
+        
+        -- Rebuild the array sequentially
+        for i = 1, 20 do
+            if temp_map[i] then
+                clean_order[#clean_order+1] = temp_map[i]
+            end
+        end
+        
+        -- Overwrite the corrupted string-key table with the fixed integer array
+        settings.chars[name].order = clean_order
+    end
+    
     -- Sync the loaded file setting to the active memory variable
     AUTOSELL_ENABLED = settings.chars[name].autosell
     
-    return settings.chars[name].order, name
+    return settings.chars[name].order, p.name
 end
 
 local function index_of_key(list, key)
@@ -843,6 +869,9 @@ local function begin_send_all(msg)
 end
 
 local function inject_moogle_stops(plan)
+    -- Sync the autosell setting from the XML file for the current logged-in character
+    get_bonall_order_for_current()
+
     -- If autosell is turned off, return the plan without inserting Moogle stops
     if not AUTOSELL_ENABLED then
         return plan
@@ -1200,8 +1229,8 @@ windower.register_event('addon command', function(cmd, ...)
             AUTOSELL_ENABLED = not AUTOSELL_ENABLED
         end
         
-        -- Save the new preference to the global file
-        settings.chars[name].autosell = AUTOSELL_ENABLED
+        -- Force the name to lowercase so it matches Windower's XML structure!
+        settings.chars[name:lower()].autosell = AUTOSELL_ENABLED
         config.save(settings)
         
         chat('Moogle Auto-Sell: ' .. (AUTOSELL_ENABLED and 'ON' or 'OFF') .. ' (Saved)')
